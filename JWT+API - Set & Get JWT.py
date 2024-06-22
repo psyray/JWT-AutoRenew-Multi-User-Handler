@@ -345,7 +345,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
             return None
 
     def getActionName(self):
-        return "V9Y - JWT+API - MODIFY_REQUEST"
+        return "Auto renew JWT - Modify request"
 
     def performAction(self, currentMessage, macro_items):
         #self._insert_breakpoint("performAction")
