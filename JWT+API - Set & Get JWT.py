@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import pdb
 import re
 import sys
@@ -5,14 +6,18 @@ import datetime
 import base64
 import json
 import urllib2
-from javax.swing import JPanel, JLabel, JTextField, JCheckBox, JButton, JTabbedPane
+from javax.swing import JPanel, JLabel, JTextField, JCheckBox, JButton, JTextArea, JScrollPane, JSplitPane, SwingUtilities
+from java.awt import BorderLayout
 
 # Burp specific imports
 from burp import IBurpExtender, ITab
 from burp import IHttpListener
 from burp import ISessionHandlingAction
-from java.io import PrintWriter
+from burp import IExtensionStateListener
+from burp import IContextMenuFactory
 from burp import ICookie
+from java.io import PrintWriter
+from java.util import ArrayList
 
 # For using the debugging tools from
 # https://github.com/securityMB/burp-exceptions
@@ -45,7 +50,7 @@ class Cookie(ICookie):
         self.cookie_path = cookie_path
         self.cookie_expiration = cookie_expiration
 
-class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
+class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, IExtensionStateListener):
 
     # Tool mapping
     tool_mapping = {
@@ -72,6 +77,8 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
     token_renewal_url = 'http://example.com/auth/realms/master/protocol/openid-connect/token'
 
     def __init__(self):
+        self.request_tool_map = {}
+        self.debug_enabled = False
         # Create options fields with default values
         self.cookie_name_field = JTextField(self.cookieName, 20)
         self.refresh_cookie_name_field = JTextField(self.refreshCookieName, 20)
@@ -82,27 +89,53 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
         self.debug_checkbox = JCheckBox("Enable Debugging", self.debug_enabled)
         self.apply_button = JButton("Apply", actionPerformed=self.apply_config)
         self.status_label = JLabel("")
+        self.log_area = JTextArea(10, 80)
+        self.log_area.setEditable(False)
+        self.log_scroll_pane = JScrollPane(self.log_area)
+        self.autoscroll_checkbox = JCheckBox("Autoscroll", True)
+        self.autoscroll_enabled = True
+        self.autoscroll_checkbox.addActionListener(self.toggle_autoscroll)
+
+    def _log(self, message):
+        self.log_area.append(message + "\n")
+        if self.autoscroll_enabled:
+            self.log_area.setCaretPosition(self.log_area.getDocument().getLength())
+        print(message)
 
     def _insert_breakpoint(self, message):
-        print("insertBreakpoint")
+        self._log("insertBreakpoint")
         if self.debug_enabled:
-            print("Breakpoint has been fetched: " + message)
+            self._log("Breakpoint has been fetched: " + message)
             #pdb.set_trace()
         else:
-            print("Debug not activated")
+            self._log("Debug not activated")
         return
 
-    def _debug(self, message, value):
+    def _debug(self, message, value=''):
         if self.debug_enabled:
-            print('===================================================================')
-            print(message)
-            print('===================================================================')
-            print(str(value))
+            separator1 = '=' * 35
+            separator2 = '-' * 35
+            if isinstance(message, str):
+                self._log(separator1 + 'DEBUG START' + separator1)
+                self._log(message)
+                self._log(separator1 + 'DEBUG END' + separator1)
+                if value:
+                    self._log(str(value))
+            elif isinstance(message, set):
+                self._log(separator1 + 'DEBUG START' + separator1)
+                for text in message:
+                    self._log(str(text))
+                    self._log(separator2)
+                self._log(separator1 + 'DEBUG END' + separator1)
+
         return
 
     def _getUrlFromMessage(self, message):
         url = self.helpers.analyzeRequest(message.getHttpService(),message.getRequest()).getUrl()
         return url
+
+    def toggle_autoscroll(self, event):
+        self.autoscroll_enabled = self.autoscroll_checkbox.isSelected()
 
     def apply_config(self, event):
         self.cookieName = self.cookie_name_field.getText()
@@ -113,9 +146,10 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
         self.token_renewal_url = self.token_renewal_url_field.getText()
         self.debug_enabled = self.debug_checkbox.isSelected()
         self.status_label.setText("Configuration applied!")
+        self._log("Configuration applied!")
         if self.debug_enabled:
-            print("Debugging is enabled")
-            # print("""
+            self._log("Debugging is enabled")
+            # self._log("""
             # Debugging is enabled
             #     n (next) : Execute next step of code.
             #     s (step) : Step into the function called
@@ -123,6 +157,60 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
             #     l (list) : List source code around the current line
             #     p (print) : Display variable value
             # """)
+        # Save the configuration
+        self.callbacks.saveExtensionSetting("config", self.saveConfig())
+
+    def saveConfig(self):
+        config = {
+            'cookieName': self.cookieName,
+            'refreshCookieName': self.refreshCookieName,
+            'cookieDomain': self.cookieDomain,
+            'header_name': self.header_name,
+            'username_key': self.username_key,
+            'token_renewal_url': self.token_renewal_url,
+            'debug_enabled': self.debug_enabled
+        }
+        config_str = json.dumps(config)
+        config_bytes = config_str.encode('utf-8')
+        return base64.b64encode(config_bytes).decode('utf-8')
+
+    # Method to load the configuration
+    def loadConfig(self, config_str):
+        try:
+            config_bytes = base64.b64decode(config_str.encode('utf-8'))
+            config = json.loads(config_bytes.decode('utf-8'))
+
+            self.cookieName = config.get('cookieName', self.cookieName)
+            self.refreshCookieName = config.get('refreshCookieName', self.refreshCookieName)
+            self.cookieDomain = config.get('cookieDomain', self.cookieDomain)
+            self.header_name = config.get('header_name', self.header_name)
+            self.username_key = config.get('username_key', self.username_key)
+            self.token_renewal_url = config.get('token_renewal_url', self.token_renewal_url)
+            self.debug_enabled = config.get('debug_enabled', self.debug_enabled)
+
+            self.cookie_name_field.setText(self.cookieName)
+            self.refresh_cookie_name_field.setText(self.refreshCookieName)
+            self.cookie_domain_field.setText(self.cookieDomain)
+            self.header_name_field.setText(self.header_name)
+            self.username_key_field.setText(self.username_key)
+            self.token_renewal_url_field.setText(self.token_renewal_url)
+            self.debug_checkbox.setSelected(self.debug_enabled)
+
+            self.status_label.setText("Configuration loaded!")
+            self._log("Configuration loaded successfully")
+        except Exception as e:
+            self._log("Error loading configuration: {}".format(e))
+            self.status_label.setText("Error loading configuration")
+
+    def getConfigAsJson(self):
+        return self.saveConfig()
+
+    def loadConfigFromJson(self, jsonConfig):
+        self.loadConfig(jsonConfig)
+
+    def extensionUnloaded(self):
+        self._log("Extension was unloaded")
+        self.callbacks.saveExtensionSetting("config", self.saveConfig())
 
     # Define some cookie functions
     def deleteCookie(self, domain, name):
@@ -176,10 +264,21 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
         # Register ourselves as a Burp Tab
         callbacks.addSuiteTab(self)
 
+        # Register to be notified of extension unload
+        callbacks.registerExtensionStateListener(self)
+
+        # Load configuration if available
+        saved_config = self.callbacks.loadExtensionSetting("config")
+        if saved_config:
+            self.loadConfig(saved_config)
+
         # Used by the custom debugging tools
         sys.stdout = callbacks.getStdout()
 
-        print("Auto renew JWT - Enabled!")
+        self._log("Auto renew JWT - Enabled!")
+
+        # Analyze proxy history for tokens (limiting to last 100 requests)
+        self.analyze_proxy_history(max_requests=100)
 
         return
 
@@ -188,65 +287,131 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
 
     def getUiComponent(self):
         panel = JPanel()
-        panel.setLayout(None)
+        panel.setLayout(BorderLayout())
+
+        options_panel = JPanel()
+        options_panel.setLayout(None)
 
         label_cookie_name = JLabel("Cookie Name:")
         label_cookie_name.setBounds(10, 10, 200, 25)
-        panel.add(label_cookie_name)
+        options_panel.add(label_cookie_name)
 
         self.cookie_name_field.setBounds(220, 10, 200, 25)
-        panel.add(self.cookie_name_field)
+        options_panel.add(self.cookie_name_field)
 
         label_refresh_cookie_name = JLabel("Refresh Cookie Name:")
         label_refresh_cookie_name.setBounds(10, 40, 200, 25)
-        panel.add(label_refresh_cookie_name)
+        options_panel.add(label_refresh_cookie_name)
 
         self.refresh_cookie_name_field.setBounds(220, 40, 200, 25)
-        panel.add(self.refresh_cookie_name_field)
+        options_panel.add(self.refresh_cookie_name_field)
 
         label_cookie_domain = JLabel("Cookie Domain:")
         label_cookie_domain.setBounds(10, 70, 200, 25)
-        panel.add(label_cookie_domain)
+        options_panel.add(label_cookie_domain)
 
         self.cookie_domain_field.setBounds(220, 70, 200, 25)
-        panel.add(self.cookie_domain_field)
+        options_panel.add(self.cookie_domain_field)
 
         label_header_name = JLabel("Header Name:")
         label_header_name.setBounds(10, 100, 200, 25)
-        panel.add(label_header_name)
+        options_panel.add(label_header_name)
 
         self.header_name_field.setBounds(220, 100, 200, 25)
-        panel.add(self.header_name_field)
+        options_panel.add(self.header_name_field)
 
         label_username_key = JLabel("Username Key:")
         label_username_key.setBounds(10, 130, 200, 25)
-        panel.add(label_username_key)
+        options_panel.add(label_username_key)
 
         self.username_key_field.setBounds(220, 130, 200, 25)
-        panel.add(self.username_key_field)
+        options_panel.add(self.username_key_field)
 
         label_token_renewal_url = JLabel("Token Renewal URL:")
         label_token_renewal_url.setBounds(10, 160, 200, 25)
-        panel.add(label_token_renewal_url)
+        options_panel.add(label_token_renewal_url)
 
         self.token_renewal_url_field.setBounds(220, 160, 800, 25)
-        panel.add(self.token_renewal_url_field)
+        options_panel.add(self.token_renewal_url_field)
 
         self.debug_checkbox.setBounds(10, 190, 200, 25)
-        panel.add(self.debug_checkbox)
+        options_panel.add(self.debug_checkbox)
 
         self.apply_button.setBounds(10, 220, 100, 25)
-        panel.add(self.apply_button)
+        options_panel.add(self.apply_button)
 
         self.status_label.setBounds(10, 250, 400, 25)
-        panel.add(self.status_label)
+        options_panel.add(self.status_label)
+
+        # Add log area
+        log_panel = JPanel()
+        log_panel.setLayout(BorderLayout())
+        log_label = JLabel("Log:")
+        log_panel.add(log_label, BorderLayout.NORTH)
+        log_panel.add(self.log_scroll_pane, BorderLayout.CENTER)
+        log_panel.add(self.autoscroll_checkbox, BorderLayout.SOUTH)
+
+        split_pane = JSplitPane(JSplitPane.VERTICAL_SPLIT, options_panel, log_panel)
+        split_pane.setDividerLocation(300)  # Set the initial position of the divider
+
+        panel.add(split_pane, BorderLayout.CENTER)
 
         return panel
+
+    def analyze_proxy_history(self, max_requests=100):
+        self._log("Analyzing proxy history...")
+        history = self.callbacks.getProxyHistory()
+        analyzed_users = set()
+        debug_text = set()
+        count = 0
+
+        self._log("Total requests in history: {}".format(len(history)))
+
+        for entry in reversed(history):  # Analyze from the most recent to the oldest
+            if count >= max_requests:
+                break
+
+            response_info = self.helpers.analyzeResponse(entry.getResponse())
+            headers = response_info.getHeaders()
+            body = entry.getResponse()[response_info.getBodyOffset():].tostring()
+
+            # Check if the response is JSON
+            if not self.is_application_json(headers):
+                return
+
+            debug_text.add("Analyzing {}".format(entry.getUrl()))
+
+            # Check if the response has access_token
+            access_token = self._get_jwt_token(body, 'access_token')
+            if access_token:
+                debug_text.add("Access Token \n{}".format(access_token))
+                jwt_payload = self._decode_jwt(access_token)
+                if jwt_payload:
+                    debug_text.add("JWT Payload \n{}".format(jwt_payload))
+                    username_key = self.username_key or 'username'
+                    username = jwt_payload.get(username_key)
+                    if username and username not in analyzed_users:
+                        self._log("Found token for user: {}".format(username))
+                        self.processHttpMessage(4, False, entry)
+                        analyzed_users.add(username)
+                    else:
+                        debug_text.add("Username {} invalid or already renewed".format(str(username)))
+                else:
+                    debug_text.add("No JWT payload found")
+            else:
+                debug_text.add("No token found")
+
+            count += 1
+
+        self._debug(debug_text)
+
+        self._log("Total users analyzed: {}".format(len(analyzed_users)))
 
     def processHttpMessage(self, toolFlag, messageIsRequest, currentMessage):
         # Only process responses
         if messageIsRequest:
             return
+        debug_text = set()
 
         #self._insert_breakpoint("processHttpMessage")
 
@@ -257,46 +422,53 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
         tool_name = self.tool_mapping.get(toolFlag, "Unknown tool")
 
         # Check if the response is JSON
+        if not self.is_application_json(headers):
+            return
+
+        debug_text.add("Processing HTTP message: ToolFlag= {}".format(tool_name))
+
+        debug_text.add("Headers \n{}".format(headers))
+        debug_text.add("Body \n{}".format(body))
+
+        # Check if the response has access_token and refresh_token
+        access_token = self._get_jwt_token(body, "access_token")
+        refresh_token = self._get_jwt_token(body, "refresh_token")
+
+        if access_token:
+            debug_text.add("Access Token \n{}".format(access_token))
+            jwt_payload = self._decode_jwt(access_token)
+            debug_text.add("JWT Access Token Payload \n{}".format(jwt_payload))
+            if jwt_payload:
+                username_key = self.username_key or "username"
+                username = jwt_payload.get(username_key)
+                debug_text.add("Username Key {}".format(username_key))
+                debug_text.add("Extracted username {}".format(username))
+                if username:
+                    self._log("Saving tokens in cookie.jar")
+                    path = "/{}".format(username)
+                    self.createCookie(self.cookieDomain, self.cookieName, access_token, path)
+                    debug_text.add("Access Token saved for username {}".format(username))
+                    self._log("[" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "] RESPONSE_READ from " + str(tool_name) + " -> [Access Token (truncated):" + access_token[-40:] + "...] [Username:" + path+ "] [Url: " + str(url) + "]")
+                    if refresh_token:
+                        debug_text.add("Refresh Token \n{}".format(refresh_token))
+                        path = "/{}".format(username)
+                        self.createCookie(self.cookieDomain, self.refreshCookieName, refresh_token, path)
+                        debug_text.add("Refresh Token saved for username {}".format(username))
+                        self._log("[" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "] RESPONSE_READ from " + str(tool_name) + " -> [Refresh Token (truncated):" + access_token[-40:] + "...] [Username:" + path+ "] [Url: " + str(url) + "]")
+                else:
+                    self._log("Username Key not found in JWT Payload, have you updated the Username Key value in plugin config ?")
+        
+        self._debug(debug_text)
+
+    def is_application_json(self, headers):
         is_it_json = False
         for header in headers:
             if "Content-Type" in header and "application/json" in header:
                 # The response type is application/json
                 is_it_json = True
                 break    
-        if not is_it_json:
-            return
-
-        self._debug('Headers', headers)
-        self._debug('Body', body)
-
-        # Check if the response has access_token and refresh_token
-        access_token = self._get_jwt_token(body, 'access_token')
-        refresh_token = self._get_jwt_token(body, 'refresh_token')
-
-        self._debug('Access Token', access_token)
-        self._debug('Refresh Token', refresh_token)
-
-        if access_token:
-            jwt_payload = self._decode_jwt(access_token)
-            self._debug('JWT Access Token Payload', jwt_payload)
-            if jwt_payload:
-                username_key = self.username_key or 'username'
-                username = jwt_payload.get(username_key)
-                self._debug("Username Key", username_key)
-                self._debug("Extracted username", username)
-                if username:
-                    print("Saving tokens in cookie.jar")
-                    path = "/{}".format(username)
-                    self.createCookie(self.cookieDomain, self.cookieName, access_token, path)
-                    self._debug("Access Token saved for username", username)
-                    print("[" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "] RESPONSE_READ from " + str(tool_name) + " -> [Access Token (truncated):" + access_token[-40:] + "...] [Username:" + path+ "] [Url: " + str(url) + "]")
-                    if refresh_token:
-                        path = "/{}".format(username)
-                        self.createCookie(self.cookieDomain, self.refreshCookieName, refresh_token, path)
-                        self._debug("Refresh Token saved for username", username)
-                        print("[" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "] RESPONSE_READ from " + str(tool_name) + " -> [Refresh Token (truncated):" + access_token[-40:] + "...] [Username:" + path+ "] [Url: " + str(url) + "]")
-                else:
-                    print("Username Key not found in JWT Payload, have you updated the Username Key value in plugin config ?")
+        
+        return is_it_json
 
     def _get_jwt_token(self, response_body, token_name):
         # Regex pattern to extract access token from response body
@@ -318,13 +490,13 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
             decoded_payload_str = decoded_payload.decode('utf-8')
             return json.loads(decoded_payload_str)
         except Exception as e:
-            print("Error decoding JWT: {}".format(e))
+            self._log("Error decoding JWT: {}".format(e))
             return None
 
     def _renew_token(self, refresh_token):
         renewal_url = self.token_renewal_url
         if not renewal_url:
-            print("Error: No token renewal URL provided in configuration.")
+            self._log("Error: No token renewal URL provided in configuration.")
             return None
 
         # Create the request to renew the token
@@ -338,10 +510,10 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
             if new_access_token:
                 return new_access_token
             else:
-                print("Error: Failed to retrieve new access token from renewal response.")
+                self._log("Error: Failed to retrieve new access token from renewal response.")
                 return None
         except Exception as e:
-            print("Error renewing token: {}".format(e))
+            self._log("Error renewing token: {}".format(e))
             return None
 
     def getActionName(self):
@@ -372,13 +544,13 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
 
                     # Check if the token is expired
                     if exp and datetime.datetime.utcfromtimestamp(exp) < datetime.datetime.utcnow():
-                        print("[{}] - TOKEN_EXPIRED: Token for user '{}' is expired - [ReqURL:{}]".format(
+                        self._log("[{}] - TOKEN_EXPIRED: Token for user '{}' is expired - [ReqURL:{}]".format(
                             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
 
                         path = "/{}".format(username)
 
                         # Check for a valid token in the cookie jar
-                        print('Get a valid token from cookie.jar')
+                        self._log('Get a valid token from cookie.jar')
                         new_token = self.getCookieValueCustomPath(self.cookieDomain, self.cookieName, path)
                         self._debug('New JWT', new_token)
                         if new_token:
@@ -387,7 +559,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
                             new_exp = decoded_new_jwt.get('exp')
 
                             if new_exp and datetime.datetime.utcfromtimestamp(new_exp) > datetime.datetime.utcnow():
-                                print("[{}] - VALID_TOKEN_FOUND: Found valid token for user '{}' in cookie jar - [ReqURL:{}]".format(
+                                self._log("[{}] - VALID_TOKEN_FOUND: Found valid token for user '{}' in cookie jar - [ReqURL:{}]".format(
                                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
 
                                 new_header = "%s %s" % (self.header_name, new_token)
@@ -399,17 +571,17 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
                                     self._debug('Request raw', self.helpers.stringToBytes(req_text))
                                     currentMessage.setRequest(self.helpers.stringToBytes(req_text))
                                 except Exception as e:
-                                    print("The error is: ",e)
-                                print("Token has been replaced in request")
+                                    self._log("The error is: ",e)
+                                self._log("Token has been replaced in request")
                             else:
-                                print("[{}] - NO_VALID_TOKEN: No valid token found for user '{}' in cookie jar - [ReqURL:{}]".format(
+                                self._log("[{}] - NO_VALID_TOKEN: No valid token found for user '{}' in cookie jar - [ReqURL:{}]".format(
                                     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
 
                                 refresh_token = self.getCookieValueCustomPath(self.cookieDomain, self.refreshCookieName, path)
                                 if refresh_token:
                                     new_token = self._renew_token(refresh_token)
                                     if new_token:
-                                        print("[{}] - TOKEN_RENEWED: Token renewed for user '{}' - [ReqURL:{}]".format(
+                                        self._log("[{}] - TOKEN_RENEWED: Token renewed for user '{}' - [ReqURL:{}]".format(
                                             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
 
                                         # Replace the old token with the new token
@@ -418,16 +590,16 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction):
                                         headers.append(new_header)
                                         currentMessage.setRequest(self.helpers.buildHttpMessage(headers, self.helpers.analyzeRequest(currentMessage.getRequest()).getBody()))
                                     else:
-                                        print("[{}] - TOKEN_RENEWAL_FAILED: Token renewal failed for user '{}' - [ReqURL:{}]".format(
+                                        self._log("[{}] - TOKEN_RENEWAL_FAILED: Token renewal failed for user '{}' - [ReqURL:{}]".format(
                                             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
                                 else:
-                                    print("[{}] - NO_REFRESH_TOKEN: No refresh token found for user '{}' - [ReqURL:{}]".format(
+                                    self._log("[{}] - NO_REFRESH_TOKEN: No refresh token found for user '{}' - [ReqURL:{}]".format(
                                         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
                     else:
-                        print("[{}] - TOKEN_VALID: Token for user '{}' is still valid - [ReqURL:{}]".format(
+                        self._log("[{}] - TOKEN_VALID: Token for user '{}' is still valid - [ReqURL:{}]".format(
                             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
                 else:
-                    print("[{}] - JWT_DECODE_ERROR: Failed to decode JWT token - [ReqURL:{}]".format(
+                    self._log("[{}] - JWT_DECODE_ERROR: Failed to decode JWT token - [ReqURL:{}]".format(
                         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self._getUrlFromMessage(currentMessage)))
 
         return
