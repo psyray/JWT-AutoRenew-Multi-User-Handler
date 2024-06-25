@@ -134,7 +134,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         if self.debug_enabled:
             separator1 = '=' * 35
             separator2 = '-' * 35
-            color = self.adjust_color_for_theme(Color.ORANGE)
+            color = Color.LIGHT_GRAY
             if isinstance(message, str):
                 self._log(separator1 + 'DEBUG START' + separator1, color)
                 self._log(message, color)
@@ -174,10 +174,11 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         return bg.getRed() < 128 and bg.getGreen() < 128 and bg.getBlue() < 128
 
     def adjust_color_for_theme(self,color):
-        if self.is_dark_theme():
-            return self.invert_color(color) if color != Color.BLACK else Color.WHITE
+        inverted_color = self.invert_color(color)
+        if not self.is_dark_theme():
+            return inverted_color
         else:
-            return self.invert_color(color) if color != Color.WHITE else Color.BLACK
+            return color
 
     def adjust_background_color(self, panel):
         if not self.is_dark_theme():
@@ -401,7 +402,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         # Add log area
         log_panel = JPanel()
         log_panel.setLayout(BorderLayout())
-        log_label = JLabel("Log:")
+        log_label = JLabel("  Log (max 500 lines):")
         self.adjust_background_color(log_label)  # Adjust background color based on theme
         log_panel.add(log_label, BorderLayout.NORTH)
         log_panel.add(self.log_scroll_pane, BorderLayout.CENTER)
@@ -465,7 +466,6 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
 
         self._debug(debug_text)
 
-        self._log("\n")
         self._log("-" * 35, Color.PINK)
         self._log("Total requests fetched: {}".format(count_all), Color.PINK)
         self._log("Total requests analyzed: {}".format(count_analyzed), Color.PINK)
