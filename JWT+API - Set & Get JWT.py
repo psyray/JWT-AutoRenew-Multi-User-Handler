@@ -6,8 +6,9 @@ import datetime
 import base64
 import json
 import urllib2
-from javax.swing import JPanel, JLabel, JTextField, JCheckBox, JButton, JTextArea, JScrollPane, JSplitPane, SwingUtilities
-from java.awt import BorderLayout
+from javax.swing import UIManager, JPanel, JTextPane, JScrollPane, JCheckBox, JLabel, JTextField, JButton, JSplitPane
+from javax.swing.text import SimpleAttributeSet, StyleConstants, StyledDocument
+from java.awt import BorderLayout, Color
 
 # Burp specific imports
 from burp import IBurpExtender, ITab
@@ -89,17 +90,35 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         self.debug_checkbox = JCheckBox("Enable Debugging", self.debug_enabled)
         self.apply_button = JButton("Apply", actionPerformed=self.apply_config)
         self.status_label = JLabel("")
-        self.log_area = JTextArea(10, 80)
-        self.log_area.setEditable(False)
-        self.log_scroll_pane = JScrollPane(self.log_area)
+        self.log_pane = JTextPane()
+        self.log_scroll_pane = JScrollPane(self.log_pane)
         self.autoscroll_checkbox = JCheckBox("Autoscroll", True)
         self.autoscroll_enabled = True
         self.autoscroll_checkbox.addActionListener(self.toggle_autoscroll)
 
-    def _log(self, message):
-        self.log_area.append(message + "\n")
+        # Adjust background color based on theme
+        self.adjust_background_color(self.log_pane)
+
+    def _log(self, message, color=None):
+        doc = self.log_pane.getStyledDocument()
+        style = self.log_pane.addStyle("Style", None)
+        if color:
+            StyleConstants.setForeground(style, self.adjust_color_for_theme(color))
+        else:
+            # Adjust default color based on theme
+            if self.is_dark_theme():
+                StyleConstants.setForeground(style, Color.WHITE)
+            else:
+                StyleConstants.setForeground(style, Color.BLACK)
+        
+        try:
+            doc.insertString(doc.getLength(), str(message) + "\n", style)
+        except Exception as e:
+            print("Error adding log message:", e)
+        
+        self.limit_lines()  # Call the method to limit the number of lines
         if self.autoscroll_enabled:
-            self.log_area.setCaretPosition(self.log_area.getDocument().getLength())
+            self.log_pane.setCaretPosition(doc.getLength())
         print(message)
 
     def _insert_breakpoint(self, message):
@@ -115,27 +134,63 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         if self.debug_enabled:
             separator1 = '=' * 35
             separator2 = '-' * 35
+            color = self.adjust_color_for_theme(Color.ORANGE)
             if isinstance(message, str):
-                self._log(separator1 + 'DEBUG START' + separator1)
-                self._log(message)
-                self._log(separator1 + 'DEBUG END' + separator1)
+                self._log(separator1 + 'DEBUG START' + separator1, color)
+                self._log(message, color)
+                self._log(separator1 + 'DEBUG END' + separator1, color)
                 if value:
-                    self._log(str(value))
+                    self._log(str(value), color)
             elif isinstance(message, set):
-                self._log(separator1 + 'DEBUG START' + separator1)
+                self._log(separator1 + 'DEBUG START' + separator1, color)
                 for text in message:
-                    self._log(str(text))
-                    self._log(separator2)
-                self._log(separator1 + 'DEBUG END' + separator1)
-
+                    self._log(str(text), color)
+                    self._log(separator2, color)
+                self._log(separator1 + 'DEBUG END' + separator1, color)
         return
 
     def _getUrlFromMessage(self, message):
         url = self.helpers.analyzeRequest(message.getHttpService(),message.getRequest()).getUrl()
         return url
 
+    def limit_lines(self, max_lines=1000):
+        doc = self.log_pane.getDocument()
+        lines = self.log_pane.getDocument().getDefaultRootElement().getElementCount()
+        if lines > max_lines:
+            try:
+                end_offset = self.log_pane.getDocument().getDefaultRootElement().getElement(0).getEndOffset()
+                doc.remove(0, end_offset)
+            except Exception as e:
+                self._log("Error limiting lines in log area: {}".format(e))
+
     def toggle_autoscroll(self, event):
         self.autoscroll_enabled = self.autoscroll_checkbox.isSelected()
+
+    def is_dark_theme(self):
+        panel = JPanel()
+        bg = panel.getBackground()
+        fg = panel.getForeground()
+        # Simple heuristic to determine if the theme is dark or light
+        return bg.getRed() < 128 and bg.getGreen() < 128 and bg.getBlue() < 128
+
+    def adjust_color_for_theme(self,color):
+        if self.is_dark_theme():
+            return self.invert_color(color) if color != Color.BLACK else Color.WHITE
+        else:
+            return self.invert_color(color) if color != Color.WHITE else Color.BLACK
+
+    def adjust_background_color(self, panel):
+        if not self.is_dark_theme():
+            panel.setBackground(Color.WHITE)
+        else:
+            panel.setBackground(panel.getBackground())  # Default background for dark theme
+
+    def invert_color(self, color):
+        # Invert the RGB values of the color
+        r = 255 - color.getRed()
+        g = 255 - color.getGreen()
+        b = 255 - color.getBlue()
+        return Color(r, g, b)
 
     def apply_config(self, event):
         self.cookieName = self.cookie_name_field.getText()
@@ -146,9 +201,9 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         self.token_renewal_url = self.token_renewal_url_field.getText()
         self.debug_enabled = self.debug_checkbox.isSelected()
         self.status_label.setText("Configuration applied!")
-        self._log("Configuration applied!")
+        self._log("Configuration applied!", Color.GREEN)
         if self.debug_enabled:
-            self._log("Debugging is enabled")
+            self._log("Debugging is enabled", Color.GREEN)
             # self._log("""
             # Debugging is enabled
             #     n (next) : Execute next step of code.
@@ -278,7 +333,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         self._log("Auto renew JWT - Enabled!")
 
         # Analyze proxy history for tokens (limiting to last 100 requests)
-        self.analyze_proxy_history(max_requests=100)
+        self.analyze_proxy_history(max_requests=250)
 
         return
 
@@ -347,6 +402,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
         log_panel = JPanel()
         log_panel.setLayout(BorderLayout())
         log_label = JLabel("Log:")
+        self.adjust_background_color(log_label)  # Adjust background color based on theme
         log_panel.add(log_label, BorderLayout.NORTH)
         log_panel.add(self.log_scroll_pane, BorderLayout.CENTER)
         log_panel.add(self.autoscroll_checkbox, BorderLayout.SOUTH)
@@ -358,17 +414,19 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
 
         return panel
 
-    def analyze_proxy_history(self, max_requests=100):
-        self._log("Analyzing proxy history...")
+    def analyze_proxy_history(self, max_requests=500):
+        self._log("\nAnalyzing proxy history at extension starts to find tokens...", Color.YELLOW)
         history = self.callbacks.getProxyHistory()
         analyzed_users = set()
         debug_text = set()
-        count = 0
+        count_analyzed = 0
+        count_all = 0
 
-        self._log("Total requests in history: {}".format(len(history)))
+        self._log("Total requests in history: {}".format(len(history)), Color.PINK)
+        self._log("-" * 35, Color.PINK)
 
         for entry in reversed(history):  # Analyze from the most recent to the oldest
-            if count >= max_requests:
+            if count_all >= max_requests:
                 break
 
             response_info = self.helpers.analyzeResponse(entry.getResponse())
@@ -377,9 +435,11 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
 
             # Check if the response is JSON
             if not self.is_application_json(headers):
-                return
+                count_all += 1
+                continue
 
             debug_text.add("Analyzing {}".format(entry.getUrl()))
+            count_analyzed += 1
 
             # Check if the response has access_token
             access_token = self._get_jwt_token(body, 'access_token')
@@ -391,7 +451,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
                     username_key = self.username_key or 'username'
                     username = jwt_payload.get(username_key)
                     if username and username not in analyzed_users:
-                        self._log("Found token for user: {}".format(username))
+                        self._log("\nFound token for user: {}".format(username), Color.GREEN)
                         self.processHttpMessage(4, False, entry)
                         analyzed_users.add(username)
                     else:
@@ -401,11 +461,17 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
             else:
                 debug_text.add("No token found")
 
-            count += 1
+            count_all += 1
 
         self._debug(debug_text)
 
-        self._log("Total users analyzed: {}".format(len(analyzed_users)))
+        self._log("\n")
+        self._log("-" * 35, Color.PINK)
+        self._log("Total requests fetched: {}".format(count_all), Color.PINK)
+        self._log("Total requests analyzed: {}".format(count_analyzed), Color.PINK)
+        self._log("Total users found: {}".format(len(analyzed_users)), Color.PINK)
+        self._log("Analyze of proxy history ended\n", Color.YELLOW)
+
 
     def processHttpMessage(self, toolFlag, messageIsRequest, currentMessage):
         # Only process responses
@@ -444,20 +510,21 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
                 debug_text.add("Username Key {}".format(username_key))
                 debug_text.add("Extracted username {}".format(username))
                 if username:
-                    self._log("Saving tokens in cookie.jar")
                     path = "/{}".format(username)
                     self.createCookie(self.cookieDomain, self.cookieName, access_token, path)
                     debug_text.add("Access Token saved for username {}".format(username))
                     self._log("[" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "] RESPONSE_READ from " + str(tool_name) + " -> [Access Token (truncated):" + access_token[-40:] + "...] [Username:" + path+ "] [Url: " + str(url) + "]")
+                    self._log("Saving Access Token in cookie.jar", Color.YELLOW)
                     if refresh_token:
                         debug_text.add("Refresh Token \n{}".format(refresh_token))
                         path = "/{}".format(username)
                         self.createCookie(self.cookieDomain, self.refreshCookieName, refresh_token, path)
                         debug_text.add("Refresh Token saved for username {}".format(username))
                         self._log("[" + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "] RESPONSE_READ from " + str(tool_name) + " -> [Refresh Token (truncated):" + access_token[-40:] + "...] [Username:" + path+ "] [Url: " + str(url) + "]")
+                        self._log("Saving Refresh Token in cookie.jar", Color.YELLOW)
                 else:
                     self._log("Username Key not found in JWT Payload, have you updated the Username Key value in plugin config ?")
-        
+
         self._debug(debug_text)
 
     def is_application_json(self, headers):
@@ -545,12 +612,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
                     # Check if the token is expired
                     if exp and datetime.datetime.utcfromtimestamp(exp) < datetime.datetime.utcnow():
                         self._log("[{}] - TOKEN_EXPIRED: Token for user '{}' is expired - [ReqURL:{}]".format(
-                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.ORANGE)
 
                         path = "/{}".format(username)
 
                         # Check for a valid token in the cookie jar
-                        self._log('Get a valid token from cookie.jar')
+                        self._log('Get a valid token from cookie.jar', Color.YELLOW)
                         new_token = self.getCookieValueCustomPath(self.cookieDomain, self.cookieName, path)
                         self._debug('New JWT', new_token)
                         if new_token:
@@ -560,7 +627,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
 
                             if new_exp and datetime.datetime.utcfromtimestamp(new_exp) > datetime.datetime.utcnow():
                                 self._log("[{}] - VALID_TOKEN_FOUND: Found valid token for user '{}' in cookie jar - [ReqURL:{}]".format(
-                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.GREEN)
 
                                 new_header = "%s %s" % (self.header_name, new_token)
                                 self._debug('New header', new_header)
@@ -571,18 +638,18 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
                                     self._debug('Request raw', self.helpers.stringToBytes(req_text))
                                     currentMessage.setRequest(self.helpers.stringToBytes(req_text))
                                 except Exception as e:
-                                    self._log("The error is: ",e)
-                                self._log("Token has been replaced in request")
+                                    self._log("The error is: {}".format(e), Color.RED)
+                                self._log("Token has been replaced in request", Color.YELLOW)
                             else:
                                 self._log("[{}] - NO_VALID_TOKEN: No valid token found for user '{}' in cookie jar - [ReqURL:{}]".format(
-                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.RED)
 
                                 refresh_token = self.getCookieValueCustomPath(self.cookieDomain, self.refreshCookieName, path)
                                 if refresh_token:
                                     new_token = self._renew_token(refresh_token)
                                     if new_token:
                                         self._log("[{}] - TOKEN_RENEWED: Token renewed for user '{}' - [ReqURL:{}]".format(
-                                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.GREEN)
 
                                         # Replace the old token with the new token
                                         new_header = "{} {}".format(self.header_name, new_token)
@@ -591,16 +658,16 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, ISessionHandlingAction, I
                                         currentMessage.setRequest(self.helpers.buildHttpMessage(headers, self.helpers.analyzeRequest(currentMessage.getRequest()).getBody()))
                                     else:
                                         self._log("[{}] - TOKEN_RENEWAL_FAILED: Token renewal failed for user '{}' - [ReqURL:{}]".format(
-                                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.RED)
                                 else:
                                     self._log("[{}] - NO_REFRESH_TOKEN: No refresh token found for user '{}' - [ReqURL:{}]".format(
-                                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.RED)
                     else:
                         self._log("[{}] - TOKEN_VALID: Token for user '{}' is still valid - [ReqURL:{}]".format(
-                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)))
+                            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username, self._getUrlFromMessage(currentMessage)), Color.GREEN)
                 else:
                     self._log("[{}] - JWT_DECODE_ERROR: Failed to decode JWT token - [ReqURL:{}]".format(
-                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self._getUrlFromMessage(currentMessage)))
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self._getUrlFromMessage(currentMessage)), Color.RED)
 
         return
 
