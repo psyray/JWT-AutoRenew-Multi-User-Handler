@@ -98,7 +98,7 @@ This extension is a complete rewrite and consolidation of the original [BurpExte
 ## Future Enhancements
 
 - **Headless Browser Auto-Login:**  
-  Integration with headless browser login (see `jwt_4B_Chrome_Headless_AutoLogin.py`) is planned for future releases, to automate initial authentication and token retrieval.
+  Integration with headless browser login (see `jwt_4B_Chrome_Headless_AutoLogin.py` from [forked files](blob/forked-files/jwt_4B_Chrome_Headless_AutoLogin.py)) is planned for future releases, to automate initial authentication and token retrieval.
 
 ## Credits
 
